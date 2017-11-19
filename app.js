@@ -6,7 +6,19 @@ const
   crypto = require('crypto'),
   express = require('express'),
   https = require('https'),  
-  request = require('request');
+  request = require('request'),
+  later = require('later');
+
+var firebase = require('firebase');
+var app = firebase.initializeApp({
+  apiKey: "AIzaSyCfL-L_FKnVeZS7tRvApeztLVq46ZQjJ5Y",
+  authDomain: "oak-hack-bot.firebaseapp.com",
+  databaseURL: "https://oak-hack-bot.firebaseio.com",
+  projectId: "oak-hack-bot",
+  storageBucket: "oak-hack-bot.appspot.com",
+  messagingSenderId: "3399929829"
+});
+var database = firebase.database();
 
 var app = express();
 app.set('port', config.port);
@@ -33,6 +45,9 @@ if (!(APP_SECRET && VALIDATION_TOKEN && PAGE_ACCESS_TOKEN)) {
   console.error("Missing config values");
   process.exit(1);
 }
+
+
+let expectingResponse;
 
 /*
  * Verify that the request came from Facebook. You should expect a hash of 
@@ -144,7 +159,51 @@ function processPostbackMessage(event) {
     "at (%d)", 
     senderID, recipientID, payload, timeOfPostback);
 
-  respondToHelpRequest(senderID, payload);
+  switch (payload) {
+    case 'get_started':     
+      getStartedReply(senderID);
+      break;
+    case 'MESSAGE_FREQUENCY': 
+      console.log('[postback set message frequency]');
+      sendTextMessage(senderID, `How often do you want to hang out? I'll check in every X minutes`);
+      expectingResponse = {
+        expecting: true, 
+        type: 'messageFrequency', 
+        callback: setFrequency, 
+        fromText: true
+      };   
+  }
+
+  // respondToHelpRequest(senderID, payload);
+}
+
+function getStartedReply(senderID) {
+  let startImage = {
+    "recipient":{
+      "id": senderID
+    },
+    "message":{
+      "attachment":{
+        "type":"image", 
+        "payload":{
+          "url":"https://firebasestorage.googleapis.com/v0/b/oak-hack-bot.appspot.com/o/Screen%20Shot%202017-11-18%20at%203.06.37%20PM.png?alt=media&token=3dc677d3-265d-4882-a778-38ebed2b70c8", 
+          "is_reusable":true
+        }
+      }
+    }
+  }
+  console.log('get_started payload about to call send api with image');
+  sendTextMessage(senderID, `Yo, I'm Groove Assistant. Let's get this (work) party started. Open my menu to the left of your text bar (see image)`)
+  callSendAPI(startImage)
+}
+
+function setFrequency(frequency, senderID) {
+  console.log('frequency: ', frequency);
+  firebase.database().ref('users/' + senderID).set({
+    frequency: frequency.text
+  }).then(success => {
+    sendTextMessage(senderID, `Cool! I'll come hang out every ${frequency.text} minutes`)
+  })
 }
 
 /*
@@ -159,6 +218,10 @@ function processMessageFromPage(event) {
 
   console.log("[processMessageFromPage] user (%d) page (%d) timestamp (%d) and message (%s)", 
     senderID, pageID, timeOfMessage, JSON.stringify(message));
+
+  if (expectingResponse && expectingResponse.fromText) {
+    expectingResponse.callback(message, senderID)
+  }
 
   if (message.quick_reply) {
     console.log("[processMessageFromPage] quick_reply.payload (%s)", 
@@ -178,7 +241,9 @@ function processMessageFromPage(event) {
         // handle 'help' as a special case
         sendHelpOptionsAsQuickReplies(senderID);
         break;
-      
+      // case 'get_started': 
+      //   sendTextMessage(senderID, 'Please set up your menu');
+      //   break;
       default:
         // otherwise, just echo it back to the sender
         sendTextMessage(senderID, messageText);
@@ -226,6 +291,25 @@ function sendHelpOptionsAsQuickReplies(recipientId) {
   callSendAPI(messageData);
 }
 
+/**
+ * send the configuration UI
+ */
+
+function sendConiguration(recipientId) {
+  console.log("[sendHelpOptionsAsQuickReplies] Sending help options menu"); 
+  var messageData = {
+    recipient: {
+      id: recipientId
+    },
+    message: {
+      text: "Select a feature to learn more."
+    }
+  };
+  callSendAPI(messageData);
+}
+
+
+
 /*
  * user tapped a Quick Reply button; respond with the appropriate content
  * 
@@ -248,7 +332,7 @@ function handleQuickReplyResponse(event) {
  */
 function respondToHelpRequest(senderID, payload) {
   // set useGenericTemplates to false to send image attachments instead of generic templates
-  var useGenericTemplates = true; 
+  var useGenericTemplates = false; 
   var messageData = {};
   
   if (useGenericTemplates) {
@@ -662,7 +746,7 @@ function callSendAPI(messageData) {
     if (!error && response.statusCode == 200) {
       var recipientId = body.recipient_id;
       var messageId = body.message_id;
-
+      console.log('body: ', body);
       if (messageId) {
         console.log("[callSendAPI] message id %s sent to recipient %s", 
           messageId, recipientId);
